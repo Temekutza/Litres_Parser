@@ -1,0 +1,13 @@
+venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+chromedriver-win64/
+*.xlsx
+*.sqlite
+*.db
+*.log
+
+
