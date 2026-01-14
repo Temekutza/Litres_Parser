@@ -367,14 +367,36 @@ def _extract_factoids(soup: BeautifulSoup) -> dict[str, str]:
     # 2. HTML Fallbacks (only if JSON didn't provide data)
     
     # LitRes Rating Block
-    if not out.get("rating_litres"):
+    if not out.get("rating_litres") or not out.get("rating_litres").strip():
         litres_block = soup.select_one("[data-testid='book-factoids__rating']")
         if litres_block:
-            out["rating_litres"] = _first_text(litres_block, [".book-factoids__total-rating"]) or ""
-            out["rating_count_litres"] = _first_text(litres_block, [".book-factoids__counter"]) or ""
+            # For audiobooks, rating and count are often in the same block: "4,9 547 оценок"
+            block_text = litres_block.get_text(" ", strip=True)
+            
+            # Try to find rating and count in sub-elements first
+            rating_el = litres_block.select_one("[data-testid='book-factoids__total-rating']")
+            if rating_el:
+                out["rating_litres"] = rating_el.get_text(strip=True)
+            
+            count_el = litres_block.select_one("[data-testid='book-factoids__marks']")
+            if count_el:
+                cnt = _first_int(count_el.get_text(strip=True))
+                if cnt:
+                    out["rating_count_litres"] = str(cnt)
+            
+            # Fallback: parse from combined text
+            if not out.get("rating_litres") or not out.get("rating_litres").strip():
+                rv = _first_float(block_text)
+                if rv:
+                    out["rating_litres"] = str(rv)
+            
+            if not out.get("rating_count_litres") or not out.get("rating_count_litres").strip():
+                cnt = _first_int(block_text)
+                if cnt:
+                    out["rating_count_litres"] = str(cnt)
 
     # Reviews Count
-    if not out.get("reviews_count"):
+    if not out.get("reviews_count") or not out.get("reviews_count").strip():
         rev_block = soup.select_one("[data-testid='book-factoids__reviews']")
         if rev_block:
             # Try to get number from the block text
@@ -382,7 +404,7 @@ def _extract_factoids(soup: BeautifulSoup) -> dict[str, str]:
             cnt = _first_int(txt)
             if cnt:
                 out["reviews_count"] = str(cnt)
-        if not out.get("reviews_count"):
+        if not out.get("reviews_count") or not out.get("reviews_count").strip():
             # Fallback: look for link to /otzyvy/
             rev_link = soup.select_one("a[href*='/otzyvy/']")
             if rev_link:
@@ -392,7 +414,7 @@ def _extract_factoids(soup: BeautifulSoup) -> dict[str, str]:
                     out["reviews_count"] = str(cnt)
 
     # Quotations Count
-    if not out.get("quotations_count"):
+    if not out.get("quotations_count") or not out.get("quotations_count").strip():
         quot_block = soup.select_one("[data-testid='book-factoids__quotations']")
         if quot_block:
             # Try to get number from the block text
@@ -400,7 +422,7 @@ def _extract_factoids(soup: BeautifulSoup) -> dict[str, str]:
             cnt = _first_int(txt)
             if cnt:
                 out["quotations_count"] = str(cnt)
-        if not out.get("quotations_count"):
+        if not out.get("quotations_count") or not out.get("quotations_count").strip():
             # Fallback: look for link to /citati/
             quot_link = soup.select_one("a[href*='/citati/']")
             if quot_link:
@@ -410,7 +432,8 @@ def _extract_factoids(soup: BeautifulSoup) -> dict[str, str]:
                     out["quotations_count"] = str(cnt)
 
     # LiveLib Block (SEPARATE from LitRes!)
-    if not out.get("livelib_rating"):
+    # Note: not all audiobooks have LiveLib ratings
+    if not out.get("livelib_rating") or not out.get("livelib_rating").strip():
         ll_block = soup.select_one("[data-testid='book-factoids__livelib']")
         if ll_block:
             # Rating: <span>4,6</span>
