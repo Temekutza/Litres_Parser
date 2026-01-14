@@ -8,8 +8,24 @@ Examples:
   python main.py single https://www.litres.ru/book/...
 """
 
-from litres_parser.cli import main
+import sys
+
+
+def _ensure_supported_python() -> None:
+    # The project uses modern typing syntax (e.g. `list[str]`, `int | None`),
+    # so we require Python 3.10+.
+    if sys.version_info < (3, 10):
+        v = ".".join(map(str, sys.version_info[:3]))
+        raise SystemExit(
+            "This project requires Python 3.10+.\n"
+            f"Current Python: {v}\n"
+            "Install a newer Python and recreate the virtualenv.\n"
+            "Windows: https://www.python.org/downloads/windows/"
+        )
 
 
 if __name__ == "__main__":
+    _ensure_supported_python()
+    from litres_parser.cli import main
+
     main()

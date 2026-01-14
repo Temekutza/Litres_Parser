@@ -17,7 +17,11 @@ class CatalogDiscovery:
 
 def iter_genre_urls(d: CatalogDiscovery, *, cfg: FetchConfig) -> Iterator[str]:
     """
-    Yields absolute URLs for genre pages (/genre/.../).
+    Yields absolute URLs for genre/category pages.
+
+    Notes:
+    - litres.ru uses `/genre/.../`
+    - litres.com uses category-like paths such as `/knigi-fentezi/`, `/biznes-knigi/.../`, etc.
     """
     session = make_session()
     html = fetch_text(session, urljoin(d.base_url, d.genres_path), cfg=cfg)
@@ -27,11 +31,27 @@ def iter_genre_urls(d: CatalogDiscovery, *, cfg: FetchConfig) -> Iterator[str]:
         href = a["href"]
         if not isinstance(href, str):
             continue
-        if href.startswith("/genre/"):
-            u = urljoin(d.base_url, href)
-            if u not in seen:
-                seen.add(u)
-                yield u
+        # Normalize
+        href = href.strip()
+        if not href.startswith("/"):
+            continue
+        if "?" in href:
+            href = href.split("?", 1)[0]
+
+        # Exclude obvious non-categories and direct book URLs
+        if any(x in href for x in ("/book/", "/audiobook/", "/pages/", "/download_book/")):
+            continue
+
+        is_ru_genre = href.startswith("/genre/")
+        is_com_category = ("knigi" in href) or ("audiobooks" in href)
+
+        if not (is_ru_genre or is_com_category):
+            continue
+
+        u = urljoin(d.base_url, href)
+        if u not in seen:
+            seen.add(u)
+            yield u
 
 
 def iter_book_urls_from_genre(

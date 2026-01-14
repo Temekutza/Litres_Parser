@@ -4,6 +4,10 @@
 
 Важно: каталог LitRes очень большой, поэтому «все книги» — это **долгий** процесс. Используйте лимиты, паузы и продолжение из базы.
 
+### Требования
+
+- Python **3.10+**
+
 ### Установка
 
 ```bash
@@ -14,7 +18,7 @@ pip install -r requirements.txt
 
 ### Быстрый старт
 
-- **1) Найти ссылки на книги (через `robots.txt` → `sitemap`):**
+- **1) Найти ссылки на книги и положить в очередь (по умолчанию через каталог жанров):**
 
 ```bash
 python main.py discover --limit 5000
@@ -32,6 +36,8 @@ python main.py crawl --workers 5 --limit 1000
 python main.py export --out litres.xlsx
 ```
 
+> Если нужны отзывы: добавьте `--with-reviews` к `crawl` (медленнее, best-effort).
+
 ### Режим «одна книга»
 
 ```bash
@@ -40,7 +46,8 @@ python main.py single https://www.litres.ru/book/...
 
 ### Как это работает
 
-- Discovery читает `robots.txt`, вытаскивает строки `Sitemap: ...`, скачивает sitemap’ы и собирает URL’ы.
+- Discovery по умолчанию обходит каталог жанров (`/pages/new_genres/`) и постранично собирает URL’ы.
+- Альтернатива: `--method sitemap` (если сайт публикует `Sitemap:` в `robots.txt`; сейчас это может отсутствовать).
 - Crawl берёт URL’ы из очереди в SQLite и вытаскивает метаданные со страницы (в первую очередь из JSON‑LD и meta-тегов).
 - Прогресс сохраняется в `litres.sqlite` — можно запускать повторно.
 

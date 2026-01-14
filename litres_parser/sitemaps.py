@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+import gzip
 import re
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from typing import Iterable, Iterator
 from urllib.parse import urljoin
 
-from .http import FetchConfig, fetch_text, make_session
+from .http import FetchConfig, fetch_bytes, fetch_text, make_session
 
 
 SITEMAP_RE = re.compile(r"^\s*Sitemap:\s*(\S+)\s*$", re.IGNORECASE)
@@ -33,7 +34,7 @@ def discover_sitemaps(d: SitemapDiscovery, *, cfg: FetchConfig) -> list[str]:
     return sorted(set(sitemaps))
 
 
-def _iter_sitemap_locs(xml_text: str) -> Iterator[str]:
+def _iter_sitemap_locs(xml_text: str | bytes) -> Iterator[str]:
     """
     Supports both <urlset> and <sitemapindex>.
     """
@@ -42,6 +43,14 @@ def _iter_sitemap_locs(xml_text: str) -> Iterator[str]:
     for loc in root.findall(".//{*}loc"):
         if loc.text:
             yield loc.text.strip()
+
+
+def _maybe_decompress_gzip(data: bytes, *, url: str) -> bytes:
+    # Some sitemaps are served as *.xml.gz without Content-Encoding: gzip.
+    # Detect by URL suffix or gzip magic header.
+    if url.lower().endswith(".gz") or data[:2] == b"\x1f\x8b":
+        return gzip.decompress(data)
+    return data
 
 
 def iter_urls_from_sitemaps(sitemap_urls: Iterable[str], *, cfg: FetchConfig) -> Iterator[str]:
@@ -62,7 +71,10 @@ def iter_urls_from_sitemaps(sitemap_urls: Iterable[str], *, cfg: FetchConfig) ->
     while queue:
         sm = queue.pop(0)
         try:
-            xml_text = fetch_text(session, sm, cfg=cfg)
+            raw = fetch_bytes(session, sm, cfg=cfg)
+            xml_bytes = _maybe_decompress_gzip(raw, url=sm)
+            # ET.fromstring accepts bytes and honors encoding from XML header.
+            xml_text = xml_bytes
         except Exception:
             # sitemap might be missing/blocked; skip it
             continue
@@ -80,7 +92,8 @@ def is_probable_book_url(url: str) -> bool:
     Adjust patterns as needed for LitRes URL taxonomy.
     """
     u = url.lower()
-    if "litres.ru" not in u:
+    # Support both main domains currently used in the project.
+    if ("litres.ru" not in u) and ("litres.com" not in u):
         return False
     if any(x in u for x in ("/book/", "/audiobook/")):
         return True
