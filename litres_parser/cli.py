@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json as json_module
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
@@ -14,6 +15,7 @@ from .http import FetchConfig, polite_sleep
 from .catalog import CatalogDiscovery, iter_book_urls_from_catalog
 from .sitemaps import SitemapDiscovery, discover_sitemaps, is_probable_book_url, iter_urls_from_sitemaps
 from .storage import DbConfig, connect_db, enqueue_urls, init_db, iter_books, iter_reviews, mark_queue_done, mark_queue_failed, upsert_book, upsert_reviews, utc_now_iso
+from .normalizer import normalize_book_data, normalize_review_data, save_raw_json, save_normalized_json
 
 
 _thread_local = threading.local()
@@ -204,9 +206,32 @@ def cmd_crawl(args: argparse.Namespace) -> None:
                     mark_queue_failed(con, u, err)
                 else:
                     if res.ok:
-                        upsert_book(con, res.data)
-                        if args.with_reviews and res.reviews:
-                            upsert_reviews(con, res.reviews)
+                        # Архитектура: Парсинг → Сырой JSON → Нормализация → Нормализованный JSON → БД
+                        
+                        # 1. Сырые данные из парсера
+                        raw_book = dict(res.data)
+                        raw_reviews = list(res.reviews) if res.reviews else []
+                        
+                        # 2. Опционально: сохранить сырые данные в JSON (для отладки)
+                        if getattr(args, 'save_raw_json', False):
+                            import hashlib
+                            url_hash = hashlib.md5(u.encode()).hexdigest()[:8]
+                            save_raw_json({"book": raw_book, "reviews": raw_reviews}, f"debug/raw_{url_hash}.json")
+                        
+                        # 3. Нормализация данных
+                        normalized_book = normalize_book_data(raw_book)
+                        normalized_reviews = [normalize_review_data(r) for r in raw_reviews]
+                        
+                        # 4. Опционально: сохранить нормализованные данные в JSON (для отладки)
+                        if getattr(args, 'save_normalized_json', False):
+                            import hashlib
+                            url_hash = hashlib.md5(u.encode()).hexdigest()[:8]
+                            save_normalized_json({"book": normalized_book, "reviews": normalized_reviews}, f"debug/normalized_{url_hash}.json")
+                        
+                        # 5. Сохранение нормализованных данных в БД
+                        upsert_book(con, normalized_book)
+                        if args.with_reviews and normalized_reviews:
+                            upsert_reviews(con, normalized_reviews)
                         mark_queue_done(con, u)
                     else:
                         err = res.error or "unknown error"
@@ -259,24 +284,38 @@ def cmd_single(args: argparse.Namespace) -> None:
     if not res.ok:
         raise SystemExit(f"Failed: {res.error}")
     
-    if getattr(args, "save", False):
-        con = connect_db(DbConfig(path=Path(args.db)))
-        init_db(con)
-        upsert_book(con, res.data)
-        if res.reviews:
-            upsert_reviews(con, res.reviews)
-        mark_queue_done(con, args.url)
-        print(f"OK: saved to {args.db}")
+    # Архитектура: Парсинг → Сырой JSON → Нормализация → Нормализованный JSON → БД
+    raw_book = dict(res.data)
+    raw_reviews = list(res.reviews) if res.reviews else []
     
-    print("\nEXTRACTED DATA:")
-    for k, v in res.data.items():
-        # Print everything for debugging
+    print("\n=== СЫРЫЕ ДАННЫЕ (из парсера) ===")
+    for k, v in raw_book.items():
+        val = str(v).replace("\n", " | ")
+        if len(val) > 100: val = val[:97] + "..."
+        print(f"  {k:20}: {val}")
+    
+    # Нормализация
+    normalized_book = normalize_book_data(raw_book)
+    normalized_reviews = [normalize_review_data(r) for r in raw_reviews]
+    
+    print("\n=== НОРМАЛИЗОВАННЫЕ ДАННЫЕ (для БД) ===")
+    for k, v in normalized_book.items():
         val = str(v).replace("\n", " | ")
         if len(val) > 100: val = val[:97] + "..."
         print(f"  {k:20}: {val}")
     
     if getattr(args, "with_reviews", False):
-        print(f"  reviews count       : {len(res.reviews or [])}")
+        print(f"\n  reviews count       : {len(normalized_reviews)}")
+    
+    # Сохранение в БД (если указан флаг --save)
+    if getattr(args, "save", False):
+        con = connect_db(DbConfig(path=Path(args.db)))
+        init_db(con)
+        upsert_book(con, normalized_book)
+        if normalized_reviews:
+            upsert_reviews(con, normalized_reviews)
+        mark_queue_done(con, args.url)
+        print(f"\n✓ Saved to {args.db}")
 
 
 def cmd_add(args: argparse.Namespace) -> None:
@@ -318,15 +357,15 @@ def cmd_export(args: argparse.Namespace) -> None:
         ("in_series", "Принадлежность к серии (1/0)"),
         ("series_title", "Название серии"),
         ("genres", "Жанры и теги"),
-        ("formats", "Форматы (текст)"),
         ("format_text", "Формат: текст (1/0)"),
         ("format_audio", "Формат: аудио (1/0)"),
         ("format_paper", "Формат: бумажная (1/0)"),
-        ("chapters", "Название глав(ы)"),
         ("description", "Аннотация"),
         ("scraped_at", "Дата парсинга (UTC)"),
     ]
     ws.append([t for _, t in book_columns])
+    
+    # Данные уже нормализованы в БД, просто экспортируем
     for r in rows:
         ws.append([r[k] if k in r.keys() else "" for k, _ in book_columns])
 
@@ -336,7 +375,7 @@ def cmd_export(args: argparse.Namespace) -> None:
         ("review_id", "ID отзыва"),
         ("book_url", "URL книги"),
         ("author", "Автор отзыва"),
-        ("author_avatar", "Аватарка (URL)"),
+        ("author_avatar", "Аватарка автора"),
         ("published_at", "Дата публикации"),
         ("rating", "Рейтинг отзыва"),
         ("text", "Текст отзыва"),
@@ -349,12 +388,49 @@ def cmd_export(args: argparse.Namespace) -> None:
         ("scraped_at", "Дата парсинга (UTC)"),
     ]
     ws2.append([t for _, t in review_columns])
+    
+    # Данные уже нормализованы в БД, просто экспортируем
     for r in revs:
         ws2.append([r[k] if k in r.keys() else "" for k, _ in review_columns])
 
+    # Replies sheet (expanded from replies_json)
+    ws3 = wb.create_sheet("Replies")
+    reply_columns: list[tuple[str, str]] = [
+        ("review_id", "ID родительского отзыва"),
+        ("reply_author", "Автор реплая"),
+        ("reply_avatar", "Аватарка автора реплая"),
+        ("reply_date", "Дата реплая"),
+        ("reply_text", "Текст реплая"),
+        ("reply_likes", "Лайки"),
+        ("reply_dislikes", "Дизлайки"),
+    ]
+    ws3.append([t for _, t in reply_columns])
+    
+    # Извлекаем реплаи из JSON (данные уже нормализованы)
+    for r in revs:
+        review_id = r["review_id"] if "review_id" in r.keys() else ""
+        replies_json = r["replies_json"] if "replies_json" in r.keys() else ""
+        
+        if replies_json:
+            try:
+                replies = json_module.loads(replies_json)
+                for reply in replies:
+                    ws3.append([
+                        review_id,
+                        reply.get("author", ""),
+                        reply.get("author_avatar", ""),
+                        reply.get("published_at", ""),
+                        reply.get("text", ""),
+                        reply.get("likes", ""),
+                        reply.get("dislikes", ""),
+                    ])
+            except (json_module.JSONDecodeError, TypeError):
+                pass
+    
     try:
         wb.save(str(out))
-        print(f"OK: exported {len(rows)} books, {len(revs)} reviews to {out}")
+        reply_count = sum(1 for _ in wb["Replies"].iter_rows(min_row=2))
+        print(f"OK: exported {len(rows)} books, {len(revs)} reviews, {reply_count} replies to {out}")
         return
     except PermissionError:
         # Windows often locks the file when it's open in Excel/Preview/IDE.
